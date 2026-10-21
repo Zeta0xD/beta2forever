@@ -13,7 +13,7 @@ function Build {
     $s = "$root\_classic_beta_"; $d = "$root\_forever_"
     Put "$s\Interface\AddOns\Shared\Shared.toc" 'beta'
     Put "$s\Interface\AddOns\BetaOnly\BetaOnly.toc" 'b'
-    Put "$s\WTF\Config.wtf" 'SET a "beta"'
+    Put "$s\WTF\Config.wtf" "SET a `"beta`"`r`nSET portal `"test`"`r`nSET agentUID `"wow_classic_beta`"`r`nSET accountName `"me@example.com`"`r`n"
     Put "$s\WTF\Account\ACC1\bindings-cache.wtf" 'beta binds'
     Put "$s\WTF\Account\ACC1\macros-cache.txt" 'beta macros'
     Put "$s\WTF\Account\ACC1\cache.md5" 'md5'
@@ -26,7 +26,7 @@ function Build {
     Put "$d\Interface\AddOns\Shared\Shared.toc" 'forever'
     Put "$d\Interface\AddOns\Shared\Stale.lua" 'stale'
     Put "$d\Interface\AddOns\ForeverOnly\ForeverOnly.toc" 'f'
-    Put "$d\WTF\Config.wtf" 'SET a "forever"'
+    Put "$d\WTF\Config.wtf" "SET a `"forever`"`r`nSET portal `"US`"`r`nSET agentUID `"wowf`"`r`n"
     Put "$d\WTF\Account\ACC1\bindings-cache.wtf" 'copied acc'
     Put "$d\WTF\Account\NEW\bindings-cache.wtf" 'default binds'
     Put "$d\WTF\Account\NEW\91\Zeta-Test\AddOns.txt" 'x'
@@ -42,7 +42,9 @@ Check ((Text "$d\Interface\AddOns\Shared\Shared.toc") -eq 'beta') 'shared addon 
 Check (-not (Test-Path "$d\Interface\AddOns\Shared\Stale.lua")) 'stale file in replaced addon kept'
 Check (Test-Path "$d\Interface\AddOns\BetaOnly\BetaOnly.toc") 'beta-only addon not copied'
 Check (Test-Path "$d\Interface\AddOns\ForeverOnly\ForeverOnly.toc") 'forever-only addon removed'
-Check ((Text "$d\WTF\Config.wtf") -eq 'SET a "beta"') 'Config.wtf not copied'
+# Config.wtf: beta settings, but Forever's own login and client lines.
+$cfg = ((Text "$d\WTF\Config.wtf") -split "`r?`n" | Where-Object { $_ } | Sort-Object) -join '|'
+Check ($cfg -eq 'SET a "beta"|SET agentUID "wowf"|SET portal "US"') "Config.wtf merge wrong: $cfg"
 Check ((Text "$d\WTF\Account\NEW\bindings-cache.wtf") -eq 'beta binds') 'account binds not copied'
 Check ((Text "$d\WTF\Account\NEW\macros-cache.txt") -eq 'beta macros') 'account macros not copied'
 Check (-not (Test-Path "$d\WTF\Account\NEW\cache.md5")) 'cache.md5 copied'
@@ -55,7 +57,7 @@ Check (-not (Test-Path "$d\WTF\Account\SavedVariables\Global.lua")) 'global Save
 $bk = Get-ChildItem $root -Directory -Filter 'beta2forever-backup-*' | Select-Object -First 1
 Check ($null -ne $bk) 'no backup folder'
 if ($bk) {
-    Check ((Text "$($bk.FullName)\WTF\Config.wtf") -eq 'SET a "forever"') 'backup lacks old Config.wtf'
+    Check ((Text "$($bk.FullName)\WTF\Config.wtf") -like 'SET a "forever"*') 'backup lacks old Config.wtf'
     Check ((Text "$($bk.FullName)\Interface\AddOns\Shared\Stale.lua") -eq 'stale') 'backup lacks old addon'
 }
 
@@ -63,13 +65,32 @@ if ($bk) {
 Build
 $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -WowDir $root -SkipProcessCheck -Answers 'y,y,y,n,2,n' 2>&1
 Check ($LASTEXITCODE -ne 0) 'case2 declined run exited 0'
-Check ((Text "$root\_forever_\WTF\Config.wtf") -eq 'SET a "forever"') 'case2 declined run changed files'
+Check ((Text "$root\_forever_\WTF\Config.wtf") -like 'SET a "forever"*') 'case2 declined run changed files'
 
 # Case 3: a missing target client stops with an error.
 Build
 Remove-Item -Recurse -Force "$root\_forever_"
 $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -WowDir $root -SkipProcessCheck -Answers 'y' 2>&1
 Check ($LASTEXITCODE -ne 0) 'case3 missing client exited 0'
+
+# Case 4: a locked target file stops the copy and names the backup.
+Build
+# Shared for reading, so the backup can read it but the copy cannot write it.
+$lock = [IO.File]::Open("$root\_forever_\WTF\Account\NEW\bindings-cache.wtf", 'Open', 'Read', 'Read')
+$out = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -WowDir $root -SkipProcessCheck -Answers 'n,n,y,n,2,y' 2>&1
+$lock.Close()
+Check ($LASTEXITCODE -ne 0) 'case4 locked file exited 0'
+Check (($out -join "`n") -match 'beta2forever-backup-') "case4 no backup path in message`n$($out -join "`n")"
+
+# Case 5: a file the backup cannot read stops before anything changes, and leaves no backup folder.
+Build
+$lock = [IO.File]::Open("$root\_forever_\WTF\Account\NEW\bindings-cache.wtf", 'Open', 'Read', 'None')
+$out = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -WowDir $root -SkipProcessCheck -Answers 'y,y,y,n,2,y' 2>&1
+$lock.Close()
+Check ($LASTEXITCODE -ne 0) 'case5 unreadable file exited 0'
+Check (($out -join "`n") -match 'Nothing was changed') "case5 message`n$($out -join "`n")"
+Check ((Text "$root\_forever_\WTF\Config.wtf") -like 'SET a "forever"*') 'case5 changed files'
+Check (-not (Get-ChildItem $root -Directory -Filter 'beta2forever-backup-*')) 'case5 left a backup folder'
 
 Remove-Item -Recurse -Force $root
 if ($fails) { $fails | ForEach-Object { "FAIL: $_" }; exit 1 }

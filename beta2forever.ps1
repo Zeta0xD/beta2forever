@@ -9,6 +9,7 @@ param(
     [switch]$SkipProcessCheck
 )
 $ErrorActionPreference = 'Stop'
+trap { Write-Host "ERROR: $_" -ForegroundColor Red; exit 1 }
 $Queue = if ($Answers) { @($Answers -split ',') } else { $null }
 
 $AccountFiles = 'bindings-cache.wtf', 'macros-cache.txt', 'config-cache.wtf', 'chat-frontend-cache.txt',
@@ -16,6 +17,8 @@ $AccountFiles = 'bindings-cache.wtf', 'macros-cache.txt', 'config-cache.wtf', 'c
 $CharFiles = 'AddOns.txt', 'bindings-cache.wtf', 'macros-cache.txt', 'config-cache.wtf', 'chat-cache.txt',
     'click-bindings-cache.txt', 'cooldownmanager.txt', 'edit-mode-cache-character.txt', 'layout-local.txt',
     'tts-cache-character.txt'
+# Config.wtf lines that tie it to one client and account: Forever keeps its own.
+$ConfigKeep = 'portal', 'agentUID', 'accountName', 'accountList', 'lastCharacterIndex'
 
 function Stop-Run($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 
@@ -30,12 +33,20 @@ function Ask($q) {
 
 function Ask-YesNo($q) { (Ask "$q [y/n]") -match '^\s*y' }
 
-function Pick($what, $items) {
+# Items are folder names under $base; the list shows each with the date it was last used.
+function Label($base, $item) {
+    # The newest file in the folder: the folder's own date changes only when entries are added or removed.
+    $last = Get-ChildItem -LiteralPath "$base\$item" -File | Sort-Object LastWriteTime | Select-Object -Last 1
+    $when = if ($last) { $last.LastWriteTime.ToString('yyyy-MM-dd') } else { 'never' }
+    $realm, $name = $item -split '\\', 2
+    if ($name) { "$name  (realm folder $realm, last changed $when)" } else { "$item  (last changed $when)" }
+}
+function Pick($what, $items, $base) {
     $items = @($items)
     if ($items.Count -eq 0) { Stop-Run "no $what found" }
-    if ($items.Count -eq 1) { Write-Host "$what`: $($items[0])"; return $items[0] }
+    if ($items.Count -eq 1) { Write-Host "$what`: $(Label $base $items[0])"; return $items[0] }
     Write-Host "Choose the $what`:"
-    for ($i = 0; $i -lt $items.Count; $i++) { Write-Host "  $($i + 1)) $($items[$i])" }
+    for ($i = 0; $i -lt $items.Count; $i++) { Write-Host "  $($i + 1)) $(Label $base $items[$i])" }
     while ($true) {
         $n = 0
         if ([int]::TryParse((Ask 'Number:'), [ref]$n) -and $n -ge 1 -and $n -le $items.Count) { return $items[$n - 1] }
@@ -83,44 +94,50 @@ if (-not $SkipProcessCheck) {
 }
 
 # --- Choose what to copy ---
-$doAddons = Ask-YesNo 'Copy addons (Interface\AddOns)?'
-$doConfig = Ask-YesNo 'Copy install-wide settings (graphics, sound: WTF\Config.wtf)?'
-$doAccount = Ask-YesNo 'Copy account settings (keybinds, macros, options, addon settings)?'
-$doChars = Ask-YesNo 'Copy character settings from one character to another?'
+$doAddons = Ask-YesNo 'Copy your addons?'
+$doConfig = Ask-YesNo 'Copy graphics and sound settings?'
+$doAccount = Ask-YesNo 'Copy account settings (keybinds, macros, game options, addon settings)?'
+$doChars = Ask-YesNo "Copy one character's settings to another character?"
 if (-not ($doAddons -or $doConfig -or $doAccount -or $doChars)) { Stop-Run 'nothing chosen' }
 
 $pairs = @()   # character copies: source dir -> target dir
 if ($doAccount -or $doChars) {
-    $sa = Pick "$From account" (Accounts "$src\WTF")
+    $sa = Pick "$From account" (Accounts "$src\WTF") "$src\WTF\Account"
     $tAccounts = Accounts "$dst\WTF"
     if ($tAccounts.Count -eq 0) { Stop-Run "no account in $dst\WTF\Account. Log in once on $To, quit, and run this again." }
-    $ta = Pick "$To account" $tAccounts
+    $ta = Pick "$To account" $tAccounts "$dst\WTF\Account"
     $sAcct = "$src\WTF\Account\$sa"; $tAcct = "$dst\WTF\Account\$ta"
     if ($doChars) {
         $sc = @(Characters $sAcct); $tc = @(Characters $tAcct)
         if ($tc.Count -eq 0) { Stop-Run "no characters in $tAcct. Log in once on $To with the character, quit, and run this again." }
         do {
-            $from = Pick "$From character to copy from" $sc
-            $to = Pick "$To character to copy to" $tc
+            $from = Pick "$From character to copy from" $sc $sAcct
+            $to = Pick "$To character to copy to" $tc $tAcct
             $pairs += , @("$sAcct\$from", "$tAcct\$to")
         } while (Ask-YesNo 'Copy another character?')
     }
 }
 
 Write-Host "`nWill copy:"
-if ($doAddons) { Write-Host '  addons (same-named addon folders are replaced; other addons stay)' }
-if ($doConfig) { Write-Host '  WTF\Config.wtf' }
-if ($doAccount) { Write-Host "  account $sa -> $ta" }
+if ($doAddons) { Write-Host '  addons (addons in both clients are replaced; addons only in Forever stay)' }
+if ($doConfig) { Write-Host '  graphics and sound settings' }
+if ($doAccount) { Write-Host "  account settings: $sa -> $ta" }
 foreach ($p in $pairs) { Write-Host "  character $(Split-Path $p[0] -Leaf) -> $(Split-Path $p[1] -Leaf)" }
-if (-not (Ask-YesNo 'Go ahead?')) { Stop-Run 'cancelled; nothing changed' }
+if (-not (Ask-YesNo 'Go ahead?')) { Write-Host 'Cancelled. Nothing was changed.'; exit 1 }
 
 # --- Back up what will change ---
+Write-Host 'Backing up...'
 $bk = "$WowDir\beta2forever-backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
-New-Item -ItemType Directory $bk | Out-Null
-Copy-Item -Recurse "$dst\WTF" "$bk\WTF"
-if ($doAddons -and (Test-Path "$dst\Interface\AddOns")) {
-    New-Item -ItemType Directory "$bk\Interface" | Out-Null
-    Copy-Item -Recurse "$dst\Interface\AddOns" "$bk\Interface\AddOns"
+try {
+    New-Item -ItemType Directory $bk | Out-Null
+    Copy-Item -Recurse "$dst\WTF" "$bk\WTF"
+    if ($doAddons -and (Test-Path "$dst\Interface\AddOns")) {
+        New-Item -ItemType Directory "$bk\Interface" | Out-Null
+        Copy-Item -Recurse "$dst\Interface\AddOns" "$bk\Interface\AddOns"
+    }
+} catch {
+    Remove-Item -LiteralPath $bk -Recurse -Force -ErrorAction SilentlyContinue
+    Stop-Run "backup failed: $($_.Exception.Message)`nNothing was changed. Close any program using these files (the game, a sync tool such as OneDrive), then run this again."
 }
 Write-Host "Backup: $bk"
 
@@ -136,8 +153,17 @@ function Copy-Named($fromDir, $toDir, $names) {
     Get-ChildItem "$fromDir\SavedVariables" -Filter '*.lua' -File -ErrorAction SilentlyContinue |
         ForEach-Object { Copy-One $_.FullName "$toDir\SavedVariables\$($_.Name)" }
 }
+function Merge-Config($from, $to) {
+    $key = { if ($args[0] -match '^SET (\S+) ') { $matches[1] } }
+    $old = if (Test-Path -LiteralPath $to) { [IO.File]::ReadAllLines($to) } else { @() }
+    $lines = @([IO.File]::ReadAllLines($from) | Where-Object { $ConfigKeep -notcontains (& $key $_) }) +
+        @($old | Where-Object { $ConfigKeep -contains (& $key $_) })
+    [IO.File]::WriteAllText($to, ($lines -join "`r`n") + "`r`n")
+}
 
+try {
 if ($doAddons) {
+    Write-Host 'Copying addons...'
     foreach ($a in Get-ChildItem "$src\Interface\AddOns" -Directory) {
         $t = "$dst\Interface\AddOns\$($a.Name)"
         if (Test-Path -LiteralPath $t) { Remove-Item -LiteralPath $t -Recurse -Force }
@@ -146,11 +172,16 @@ if ($doAddons) {
         }
     }
 }
-if ($doConfig -and (Test-Path "$src\WTF\Config.wtf")) { Copy-One "$src\WTF\Config.wtf" "$dst\WTF\Config.wtf" }
+Write-Host 'Copying settings...'
+if ($doConfig -and (Test-Path "$src\WTF\Config.wtf")) { Merge-Config "$src\WTF\Config.wtf" "$dst\WTF\Config.wtf" }
 if ($doAccount) { Copy-Named $sAcct $tAcct $AccountFiles }
 foreach ($p in $pairs) { Copy-Named $p[0] $p[1] $CharFiles }
+} catch {
+    Stop-Run "copying stopped: $($_.Exception.Message)`nYour Forever files from before the copy are in $bk. To undo, quit the game and copy that folder's contents over $dst."
+}
 
 # --- Check every copy matches its source ---
+Write-Host 'Checking copies...'
 $bad = @($copied | Where-Object { (Get-FileHash -LiteralPath $_[0]).Hash -ne (Get-FileHash -LiteralPath $_[1]).Hash })
 foreach ($b in $bad) { Write-Host "MISMATCH: $($b[1])" -ForegroundColor Red }
 Write-Host "`nCopied $($copied.Count) files, $($bad.Count) mismatched."
