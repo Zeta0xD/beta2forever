@@ -1,6 +1,6 @@
 # beta2forever
 
-Copies your addons and settings from the World of Warcraft: Forever beta client to the Forever stress test client on Windows: addons, graphics and sound settings, keybinds, macros, game options, addon settings, and one character's settings onto another character. It asks before each part, backs up everything it replaces, and checks every copy.
+Copies your addons and settings from the World of Warcraft: Forever beta client to the Forever client (`_forever_`) on Windows: addons, graphics and sound settings, keybinds, macros, game options, addon settings, and one character's settings onto another character. It asks before each part, backs up everything it replaces, and checks every copy.
 
 ## Quick start
 

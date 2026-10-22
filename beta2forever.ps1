@@ -1,5 +1,5 @@
 # beta2forever: copies addons and settings from the WoW Forever beta client (_classic_beta_)
-# to the Forever stress test client (_forever_). See README.md.
+# to the Forever client (_forever_). See README.md.
 param(
     [string]$WowDir,
     [string]$From = '_classic_beta_',
